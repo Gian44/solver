@@ -47,20 +47,31 @@ def simulated_annealing(state, params, timeout_callback=None, verbose_callback=N
 
         for _ in range(t_len):
             mv = state.generate_swap_move()
-            result = state.predict_swap_cost(mv)
 
-            accept = (state.current_cost + result.delta['cost'] < state.best_cost or
-                    random.random() < sa_acceptance(result.delta['cost'], t))
+            # Store the previous cost
+            prev_cost = state.current_cost
+
+            # Apply the swap
+            state.apply_swap(mv)
+
+            # Calculate the new cost after the swap
+            new_cost = state.current_solution.compute_total_cost()
+
+            # Compute the delta as the difference between the current and previous cost
+            delta_cost = new_cost - prev_cost
+
+            # Accept the move if the new cost is lower or based on the acceptance probability
+            accept = (new_cost < state.best_cost or random.random() < sa_acceptance(delta_cost, t))
 
             if accept:
-                state.apply_swap(mv)
-                state.current_cost += result.delta['cost']
+                # Update the current cost after applying the swap
+                state.current_cost = new_cost
 
                 # 🔍 DEBUG: Validate if delta cost matches recomputed cost
                 actual_cost = state.current_solution.compute_total_cost()
                 if state.current_cost != actual_cost:
                     print(f"[DEBUG MISMATCH] Estimated Cost: {state.current_cost}, Actual Cost: {actual_cost}")
-                    print(f"Delta Applied: {result.delta['cost']}, Previous Cost: {state.current_cost - result.delta['cost']}")
+                    print(f"Delta Applied: {delta_cost}, Previous Cost: {prev_cost}")
 
                 state.update_best_solution()
 

@@ -40,7 +40,7 @@ class HeuristicSolverState:
     def update_best_solution(self):
         improved = False
         if self.current_cost < self.best_cost:
-            print(f"[Update] New best found by {self.methods_name[self.method]} with cost {self.current_cost}")
+            print(f"[Update] New best found with cost {self.current_cost}")
             delta = self.current_cost - self.best_cost if self.best_cost != float('inf') else 0
             self.best_cost = self.current_cost
             self.best_solution.copy_from(self.current_solution)
@@ -56,15 +56,25 @@ class HeuristicSolverState:
             self.stats.methods[self.method]['move_count'] += 1
 
         return improved
+
     
     def predict_swap_cost(self, mv, require_feasibility=False):
         return swap_predict(self.current_solution, mv, require_feasibility=require_feasibility, compute_cost=True)
 
     def apply_swap(self, mv):
+        # Perform the swap and calculate the cost before and after the swap
+        current_cost_before = self.current_solution.compute_total_cost()
+
         applied = swap_extended(self.current_solution, mv, strategy='always')
+
         if applied:
-            self.current_cost += swap_predict(self.current_solution, mv, require_feasibility=False, compute_cost=True).delta['cost']
+            # Calculate the new cost after the swap
+            current_cost_after = self.current_solution.compute_total_cost()
+            # Update the current cost based on the difference between the new and old cost
+            self.current_cost = current_cost_after
+
         return applied
+
 
     def generate_swap_move(self):
         while True:

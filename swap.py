@@ -43,6 +43,10 @@ def swap_move_is_effective(mv):
     return mv.helper['c1'] != mv.helper['c2']
 
 def swap_move_do(sol, mv):
+    assert sol.assignments[mv.l1].r == mv.helper['r1']
+    assert sol.assignments[mv.l1].d == mv.helper['d1']
+    assert sol.assignments[mv.l1].s == mv.helper['s1']
+
     sol.unassign_lecture(mv.l1)
     if mv.helper['l2'] >= 0:
         sol.unassign_lecture(mv.helper['l2'])
@@ -65,150 +69,155 @@ def compute_min_working_days_cost(sol, c1, d1, c2, d2):
         return 0
 
     model = sol.model
-    required_days = model.courses[c1].min_working_days
-
-    # Before
     prev_days = sum(1 for d in range(model.n_days) if sol.sum_cd[c1][d] > 0)
 
-    # After (simulate subtraction of lecture at d1 and addition at d2)
-    cur_days = 0
-    for d in range(model.n_days):
-        count = sol.sum_cd[c1][d]
-        if d == d1:
-            count -= 1
-        if d == d2:
-            count += 1
-        if count > 0:
-            cur_days += 1
+    delta_cd = sol.sum_cd[c1].copy()
+    delta_cd[d1] -= 1
+    delta_cd[d2] += 1
+    curr_days = sum(1 for d in range(model.n_days) if delta_cd[d] > 0)
 
-    cost = min(0, prev_days - required_days) + max(0, required_days - cur_days)
-    return cost * MIN_WORKING_DAYS_COST_FACTOR
-
+    required = model.courses[c1].min_working_days
+    prev_cost = max(0, required - prev_days)
+    curr_cost = max(0, required - curr_days)
+    
+    return (curr_cost - prev_cost) * MIN_WORKING_DAYS_COST_FACTOR
 
 def compute_room_stability_cost(sol, c1, r1, c2, r2):
-    if c1 < 0 or c1 == c2 or r1 == r2:
+    if c1 < 0 or r1 == r2 or c1 == c2:
         return 0
 
     model = sol.model
+    before_rooms = sum(1 for r in sol.sum_cr[c1] if r > 0)
 
-    prev_rooms = sum(1 for r in range(model.n_rooms) if sol.sum_cr[c1][r] > 0)
+    simulated = sol.sum_cr[c1].copy()
+    simulated[r1] -= 1
+    simulated[r2] += 1
+    after_rooms = sum(1 for r in simulated if r > 0)
 
-    cur_rooms = 0
-    for r in range(model.n_rooms):
-        count = sol.sum_cr[c1][r]
-        if r == r1:
-            count -= 1
-        if r == r2:
-            count += 1
-        if count > 0:
-            cur_rooms += 1
-
-    cost = max(0, cur_rooms - 1) - max(0, prev_rooms - 1)
+    cost = max(0, after_rooms - 1) - max(0, before_rooms - 1)
     return cost * ROOM_STABILITY_COST_FACTOR
-
 
 def compute_curriculum_compactness_cost(sol, c1, d1, s1, c2, d2, s2):
     if c1 < 0 or c1 == c2:
         return 0
 
     model = sol.model
-    cost = 0
+    delta_cost = 0
 
     for q_id in model.curriculas_of_course[model.courses[c1].id]:
         q = model.curricula_by_id[q_id].index
 
-        # skip cost if c1 and c2 share curriculum q
         if c2 >= 0:
             c2_id = model.courses[c2].id
             if c2_id in model.curriculas_of_course and q_id in model.curriculas_of_course[c2_id]:
                 continue
 
-        def QDS(q, d, s):
-            return 0 <= s < model.n_slots and sol.sum_qds[q][d][s] > 0
+        sum_qds = sol.sum_qds[q].copy()
+        sum_qds[d1][s1] -= 1
+        sum_qds[d2][s2] += 1
 
-        def QDS_OUT_AFTER(q, d, s):
-            return not (d == d1 and s == s1) and QDS(q, d, s)
+        def is_isolated(d, s):
+            if not (0 <= s < model.n_slots):
+                return False
+            if sum_qds[d][s] <= 0:
+                return False
+            left = sum_qds[d][s - 1] if s > 0 else 0
+            right = sum_qds[d][s + 1] if s + 1 < model.n_slots else 0
+            return left == 0 and right == 0
 
-        def QDS_IN_BEFORE(q, d, s):
-            return not (d == d1 and s == s1) and QDS(q, d, s)
+        before = is_isolated(d1, s1)
+        after = is_isolated(d2, s2)
+        delta_cost += int(after) - int(before)
 
-        def QDS_IN_AFTER(q, d, s):
-            return (d == d2 and s == s2) or ((not (d == d1 and s == s1)) and QDS(q, d, s))
-
-        def ALONE_OUT_BEFORE(q, d, s):
-            return QDS(q, d, s) and not QDS(q, d, s - 1) and not QDS(q, d, s + 1)
-
-        def ALONE_OUT_AFTER(q, d, s):
-            return QDS_OUT_AFTER(q, d, s) and not QDS_OUT_AFTER(q, d, s - 1) and not QDS_OUT_AFTER(q, d, s + 1)
-
-        def ALONE_IN_BEFORE(q, d, s):
-            return QDS_IN_BEFORE(q, d, s) and not QDS_IN_BEFORE(q, d, s - 1) and not QDS_IN_BEFORE(q, d, s + 1)
-
-        def ALONE_IN_AFTER(q, d, s):
-            return QDS_IN_AFTER(q, d, s) and not QDS_IN_AFTER(q, d, s - 1) and not QDS_IN_AFTER(q, d, s + 1)
-
-        out_prev_cost_before = int(ALONE_OUT_BEFORE(q, d1, s1 - 1))
-        out_itself_cost = int(ALONE_OUT_BEFORE(q, d1, s1))
-        out_next_cost_before = int(ALONE_OUT_BEFORE(q, d1, s1 + 1))
-
-        out_prev_cost_after = int(ALONE_OUT_AFTER(q, d1, s1 - 1))
-        out_next_cost_after = int(ALONE_OUT_AFTER(q, d1, s1 + 1))
-
-        in_prev_cost_before = int(ALONE_IN_BEFORE(q, d2, s2 - 1))
-        in_next_cost_before = int(ALONE_IN_BEFORE(q, d2, s2 + 1))
-        in_prev_cost_after = int(ALONE_IN_AFTER(q, d2, s2 - 1))
-        in_next_cost_after = int(ALONE_IN_AFTER(q, d2, s2 + 1))
-
-        in_itself_cost = int(ALONE_IN_AFTER(q, d2, s2))
-
-        q_cost = (
-            (out_prev_cost_after - out_prev_cost_before)
-            + (out_next_cost_after - out_next_cost_before)
-            + (in_prev_cost_after - in_prev_cost_before)
-            + (in_next_cost_after - in_next_cost_before)
-            + (in_itself_cost - out_itself_cost)
-        )
-
-        cost += q_cost
-
-    return cost * CURRICULUM_COMPACTNESS_COST_FACTOR
-
+    return delta_cost * CURRICULUM_COMPACTNESS_COST_FACTOR
 
 def swap_move_compute_cost(sol, mv, result):
-    room_cap_1 = compute_room_capacity_cost(sol, mv.helper['c1'], mv.helper['r1'], mv.r2)
-    room_cap_2 = compute_room_capacity_cost(sol, mv.helper['c2'], mv.r2, mv.helper['r1'])
-    result.delta['room_capacity_cost'] = room_cap_1 + room_cap_2
+    simulate_swap_delta(sol, mv)
 
-    min_days_1 = compute_min_working_days_cost(sol, mv.helper['c1'], mv.helper['d1'], mv.helper['c2'], mv.d2)
-    min_days_2 = compute_min_working_days_cost(sol, mv.helper['c2'], mv.d2, mv.helper['c1'], mv.helper['d1'])
-    result.delta['min_working_days_cost'] = min_days_1 + min_days_2
-
-    room_stab_1 = compute_room_stability_cost(sol, mv.helper['c1'], mv.helper['r1'], mv.helper['c2'], mv.r2)
-    room_stab_2 = compute_room_stability_cost(sol, mv.helper['c2'], mv.r2, mv.helper['c1'], mv.helper['r1'])
-    result.delta['room_stability_cost'] = room_stab_1 + room_stab_2
-
-    compact_1 = compute_curriculum_compactness_cost(sol, mv.helper['c1'], mv.helper['d1'], mv.helper['s1'],
-                                                    mv.helper['c2'], mv.d2, mv.s2)
-    compact_2 = compute_curriculum_compactness_cost(sol, mv.helper['c2'], mv.d2, mv.s2,
-                                                    mv.helper['c1'], mv.helper['d1'], mv.helper['s1'])
-    result.delta['curriculum_compactness_cost'] = compact_1 + compact_2
-
-    result.delta['cost'] = (
-        result.delta['room_capacity_cost'] +
-        result.delta['min_working_days_cost'] +
-        result.delta['room_stability_cost'] +
-        result.delta['curriculum_compactness_cost']
+    result.delta['room_capacity_cost'] = (
+        compute_room_capacity_cost(sol, mv.helper['c1'], mv.helper['r1'], mv.r2) +
+        compute_room_capacity_cost(sol, mv.helper['c2'], mv.r2, mv.helper['r1'])
     )
 
-    # 🔍 DEBUG PRINT
-    print(f"[DELTA DEBUG] RC={room_cap_1 + room_cap_2}, MWD={min_days_1 + min_days_2}, "
-          f"RS={room_stab_1 + room_stab_2}, CC={compact_1 + compact_2}, "
-          f"Total Delta={result.delta['cost']}")
+    result.delta['min_working_days_cost'] = (
+        compute_min_working_days_cost(sol, mv.helper['c1'], mv.helper['d1'], mv.helper['c2'], mv.d2) +
+        compute_min_working_days_cost(sol, mv.helper['c2'], mv.d2, mv.helper['c1'], mv.helper['d1'])
+    )
 
+    result.delta['room_stability_cost'] = (
+        compute_room_stability_cost(sol, mv.helper['c1'], mv.helper['r1'], mv.helper['c2'], mv.r2) +
+        compute_room_stability_cost(sol, mv.helper['c2'], mv.r2, mv.helper['c1'], mv.helper['r1'])
+    )
+
+    result.delta['curriculum_compactness_cost'] = (
+        compute_curriculum_compactness_cost(sol, mv.helper['c1'], mv.helper['d1'], mv.helper['s1'],
+                                            mv.helper['c2'], mv.d2, mv.s2) +
+        compute_curriculum_compactness_cost(sol, mv.helper['c2'], mv.d2, mv.s2,
+                                            mv.helper['c1'], mv.helper['d1'], mv.helper['s1'])
+    )
+
+    result.delta['cost'] = sum(result.delta.values())
+
+    # print(f"[DELTA DEBUG] RC={result.delta['room_capacity_cost']}, "
+    #       f"MWD={result.delta['min_working_days_cost']}, "
+    #       f"RS={result.delta['room_stability_cost']}, "
+    #       f"CC={result.delta['curriculum_compactness_cost']}, "
+    #       f"Total Delta={result.delta['cost']}")
+
+    undo_simulate_swap(sol, mv)
+
+def simulate_swap_delta(sol, mv):
+    c1 = mv.helper['c1']
+    sol.sum_cd[c1][mv.helper['d1']] -= 1
+    sol.sum_cr[c1][mv.helper['r1']] -= 1
+    sol.l_rds[mv.helper['r1']][mv.helper['d1']][mv.helper['s1']] = -1
+    sol.sum_qds_for_course(c1, mv.helper['d1'], mv.helper['s1'], -1)
+
+    if mv.helper['l2'] is not None and mv.helper['l2'] >= 0:
+        c2 = mv.helper['c2']
+        sol.sum_cd[c2][mv.d2] -= 1
+        sol.sum_cr[c2][mv.r2] -= 1
+        sol.l_rds[mv.r2][mv.d2][mv.s2] = -1
+        sol.sum_qds_for_course(c2, mv.d2, mv.s2, -1)
+
+    sol.sum_cd[c1][mv.d2] += 1
+    sol.sum_cr[c1][mv.r2] += 1
+    sol.l_rds[mv.r2][mv.d2][mv.s2] = mv.l1
+    sol.sum_qds_for_course(c1, mv.d2, mv.s2, +1)
+
+    if mv.helper['l2'] is not None and mv.helper['l2'] >= 0:
+        sol.sum_cd[c2][mv.helper['d1']] += 1
+        sol.sum_cr[c2][mv.helper['r1']] += 1
+        sol.l_rds[mv.helper['r1']][mv.helper['d1']][mv.helper['s1']] = mv.helper['l2']
+        sol.sum_qds_for_course(c2, mv.helper['d1'], mv.helper['s1'], +1)
+
+def undo_simulate_swap(sol, mv):
+    c1 = mv.helper['c1']
+    sol.sum_cd[c1][mv.d2] -= 1
+    sol.sum_cr[c1][mv.r2] -= 1
+    sol.l_rds[mv.r2][mv.d2][mv.s2] = -1
+    sol.sum_qds_for_course(c1, mv.d2, mv.s2, -1)
+
+    sol.sum_cd[c1][mv.helper['d1']] += 1
+    sol.sum_cr[c1][mv.helper['r1']] += 1
+    sol.l_rds[mv.helper['r1']][mv.helper['d1']][mv.helper['s1']] = mv.l1
+    sol.sum_qds_for_course(c1, mv.helper['d1'], mv.helper['s1'], +1)
+
+    if mv.helper['l2'] is not None and mv.helper['l2'] >= 0:
+        c2 = mv.helper['c2']
+        sol.sum_cd[c2][mv.helper['d1']] -= 1
+        sol.sum_cr[c2][mv.helper['r1']] -= 1
+        sol.l_rds[mv.helper['r1']][mv.helper['d1']][mv.helper['s1']] = -1
+        sol.sum_qds_for_course(c2, mv.helper['d1'], mv.helper['s1'], -1)
+
+        sol.sum_cd[c2][mv.d2] += 1
+        sol.sum_cr[c2][mv.r2] += 1
+        sol.l_rds[mv.r2][mv.d2][mv.s2] = mv.helper['l2']
+        sol.sum_qds_for_course(c2, mv.d2, mv.s2, +1)
 
 def swap_predict(sol, mv, require_feasibility=True, compute_cost=True):
-    result = SwapResult()
     swap_move_compute_helper(sol, mv)
+    result = SwapResult()
 
     if require_feasibility:
         result.feasible = sol.satisfy_hard_constraints_after_swap(mv)
@@ -219,16 +228,17 @@ def swap_predict(sol, mv, require_feasibility=True, compute_cost=True):
     return result
 
 def swap_extended(sol, mv, strategy='if_feasible_and_better'):
+    swap_move_compute_helper(sol, mv)
     result = swap_predict(sol, mv, require_feasibility=True, compute_cost=True)
 
     if strategy == 'always':
-        if result.feasible:  # ✔ Add feasibility check here
+        if result.feasible:
             swap_move_do(sol, mv)
             return True
     elif strategy == 'if_feasible' and result.feasible:
         swap_move_do(sol, mv)
         return True
-    elif strategy == 'if_better' and result.delta['cost'] < 0 and result.feasible:  # ✔ check feasibility
+    elif strategy == 'if_better' and result.delta['cost'] < 0 and result.feasible:
         swap_move_do(sol, mv)
         return True
     elif strategy == 'if_feasible_and_better' and result.feasible and result.delta['cost'] < 0:

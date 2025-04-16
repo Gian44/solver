@@ -65,7 +65,7 @@ def main():
 
     # === Run Simulated Annealing ===
     print("Running Simulated Annealing...")
-    timeout = timeout_callback_factory(60)  # 60-second timeout
+    timeout = timeout_callback_factory(300)  # 60-second timeout
     simulated_annealing(state, params, timeout_callback=timeout, verbose_callback=verbose_callback)
 
     print("\nFinal best cost:", state.best_cost)
